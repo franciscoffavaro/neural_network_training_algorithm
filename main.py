@@ -22,19 +22,36 @@ def _print_section(title, width=70):
     print(f"{'='*width}\n")
 
 
-def _evaluate_model(nn, X, y, dataset_name):
+def _evaluate_model(nn, X, y, dataset_name, is_multioutput=False):
     """Evaluate neural network performance."""
     preds = nn.predict(X)
-    mse = np.mean(np.square(preds - y))
-    mae = np.mean(np.abs(preds - y))
     
-    print(f"\n{dataset_name} set:")
-    print(f"  MSE: {mse:.6f}")
-    print(f"  MAE: {mae:.6f}")
-    print(f"  Sample predictions (first 5):")
-    for i in range(min(5, len(preds))):
-        err = abs(preds[i][0] - y[i][0])
-        print(f"    Pred: {preds[i][0]:.4f} | True: {y[i][0]:.4f} | Error: {err:.4f}")
+    if is_multioutput:
+        # For multi-output (15 positions), calculate per-position and overall metrics
+        mse_per_pos = np.mean((preds - y) ** 2, axis=0)
+        mae_per_pos = np.mean(np.abs(preds - y), axis=0)
+        mse = np.mean(mse_per_pos)
+        mae = np.mean(mae_per_pos)
+        
+        print(f"\n{dataset_name} set:")
+        print(f"  Overall MSE: {mse:.6f}")
+        print(f"  Overall MAE: {mae:.6f}")
+        print(f"  Sample prediction (first row, first 5 positions):")
+        for i in range(min(5, preds.shape[1])):
+            err = abs(preds[0, i] - y[0, i])
+            print(f"    Pos {i+1}: Pred {preds[0, i]:.4f} | True {y[0, i]:.4f} | Error {err:.4f}")
+    else:
+        # Original single-output behavior
+        mse = np.mean(np.square(preds - y))
+        mae = np.mean(np.abs(preds - y))
+        
+        print(f"\n{dataset_name} set:")
+        print(f"  MSE: {mse:.6f}")
+        print(f"  MAE: {mae:.6f}")
+        print(f"  Sample predictions (first 5):")
+        for i in range(min(5, len(preds))):
+            err = abs(preds[i][0] - y[i][0])
+            print(f"    Pred: {preds[i][0]:.4f} | True: {y[i][0]:.4f} | Error: {err:.4f}")
     
     return mse, mae
 
@@ -211,20 +228,23 @@ def main():
     config.validate()
     config.print_config()
     
-    # Load and split data
-    _print_section("Data Loading")
-    X, y = load_data(config.DATA_FILE_PATH)
+    # Load and split data for SEQUENCE PREDICTION (row N -> row N+1)
+    _print_section("Data Loading (Sequence Prediction Mode)")
+    from src.data_loader import load_sequence_data
+    
+    X, y, pos_min, pos_max = load_sequence_data(config.DATA_FILE_PATH)
     X_train, X_test, y_train, y_test = split_data(X, y, config.TRAIN_RATIO)
     
     print(f"\nDataset split:")
-    print(f"  Training: {len(X_train)} samples")
-    print(f"  Testing:  {len(X_test)} samples")
-    print(f"  Features: {X.shape[1]}")
+    print(f"  Training: {len(X_train)} sequence pairs (row N → row N+1)")
+    print(f"  Testing:  {len(X_test)} sequence pairs")
+    print(f"  Input:  15 positions (current row)")
+    print(f"  Output: 15 positions (next row)")
     
-    # Setup network architecture
-    inp_size = X_train.shape[1]
+    # Setup network architecture for multi-output (15 -> 15)
+    inp_size = 15  # 15 positions as input
     h_size = config.NEURAL_HIDDEN_SIZE
-    out_size = 1
+    out_size = 15  # 15 positions as output
     
     # Train with GA1 (Tournament)
     _print_section("Training: Genetic Algorithm 1 (Tournament)")
@@ -244,8 +264,8 @@ def main():
     
     # Evaluate GA1
     _print_section("Evaluation: GA1 Results")
-    mse_tr1, mae_tr1 = _evaluate_model(nn1, X_train, y_train, "Training")
-    mse_te1, mae_te1 = _evaluate_model(nn1, X_test, y_test, "Test")
+    mse_tr1, mae_tr1 = _evaluate_model(nn1, X_train, y_train, "Training", is_multioutput=True)
+    mse_te1, mae_te1 = _evaluate_model(nn1, X_test, y_test, "Test", is_multioutput=True)
     
     # Train with GA2 (Roulette)
     _print_section("Training: Genetic Algorithm 2 (Roulette Wheel)")
@@ -264,55 +284,116 @@ def main():
     
     # Evaluate GA2
     _print_section("Evaluation: GA2 Results")
-    mse_tr2, mae_tr2 = _evaluate_model(nn2, X_train, y_train, "Training")
-    mse_te2, mae_te2 = _evaluate_model(nn2, X_test, y_test, "Test")
+    mse_tr2, mae_tr2 = _evaluate_model(nn2, X_train, y_train, "Training", is_multioutput=True)
+    mse_te2, mae_te2 = _evaluate_model(nn2, X_test, y_test, "Test", is_multioutput=True)
 
-    # Export predictions to CSV in base-like format (same structure as database)
+    # Export predictions to CSV with all 15 positions
     try:
         base_df = pd.read_excel(config.DATA_FILE_PATH, engine="odf")
-        orig_y = base_df.iloc[:, -1].values.reshape(-1, 1)
-        y_min, y_max = float(orig_y.min()), float(orig_y.max())
         has_base = True
     except Exception:
         base_df = None
-        y_min, y_max = 0.0, 1.0
         has_base = False
 
-    def _denorm(a):
-        return a * (y_max - y_min) + y_min
-
-    # Get predictions for both models
-    preds_te1 = nn1.predict(X_test)
-    preds_te2 = nn2.predict(X_test)
+    # Get predictions for both models (normalized)
+    preds_te1_norm = nn1.predict(X_test)
+    preds_te2_norm = nn2.predict(X_test)
+    
+    # Denormalize predictions
+    preds_te1 = preds_te1_norm * (pos_max - pos_min) + pos_min
+    preds_te2 = preds_te2_norm * (pos_max - pos_min) + pos_min
+    
+    # Denormalize test targets
+    y_test_denorm = y_test * (pos_max - pos_min) + pos_min
 
     split_idx = len(X_train)
     
     out_dir = Path("outputs")
     out_dir.mkdir(exist_ok=True)
 
-    # Generate outputs with exact same structure as database
+    # Generate outputs with all 15 positions
     if has_base:
-        # Base test with all columns (Processo + 15 positions + final position)
-        base_test_full = base_df.iloc[split_idx:, :].copy()
+        # Base test with all columns (Processo + 15 positions)
+        base_test_full = base_df.iloc[split_idx+1:, :].copy()  # +1 because sequences skip first row
         base_pos_path = out_dir / "base_posicao_test.csv"
         base_test_full.to_csv(base_pos_path, index=False)
         print(f"\nSaved base test (full structure) to: {base_pos_path}")
 
-        # GA1 predictions: copy structure and replace last column with predictions
-        ga1_test_full = base_df.iloc[split_idx:, :].copy()
-        ga1_test_full.iloc[:, -1] = _denorm(preds_te1).flatten()
+        # Determine winner to save as result.csv
+        winner_is_ga1 = mse_te1 < mse_te2
+        
+        # GA1 predictions: Processo + all 15 predicted positions
+        ga1_test_df = pd.DataFrame()
+        ga1_test_df['Processo'] = base_test_full['Processo'].values
+        pos_cols = [c for c in base_df.columns if c != 'Processo']
+        for i, col in enumerate(pos_cols):
+            ga1_test_df[col] = np.round(preds_te1[:, i]).astype(int)
+        
         ga1_pos_path = out_dir / "predictions_ga1_test.csv"
-        ga1_test_full.to_csv(ga1_pos_path, index=False)
-        print(f"Saved GA1 predictions (full structure) to: {ga1_pos_path}")
+        ga1_test_df.to_csv(ga1_pos_path, index=False)
+        print(f"Saved GA1 predictions (all 15 positions) to: {ga1_pos_path}")
 
-        # GA2 predictions: copy structure and replace last column with predictions
-        ga2_test_full = base_df.iloc[split_idx:, :].copy()
-        ga2_test_full.iloc[:, -1] = _denorm(preds_te2).flatten()
+        # GA2 predictions: Processo + all 15 predicted positions
+        ga2_test_df = pd.DataFrame()
+        ga2_test_df['Processo'] = base_test_full['Processo'].values
+        for i, col in enumerate(pos_cols):
+            ga2_test_df[col] = np.round(preds_te2[:, i]).astype(int)
+        
         ga2_pos_path = out_dir / "predictions_ga2_test.csv"
-        ga2_test_full.to_csv(ga2_pos_path, index=False)
-        print(f"Saved GA2 predictions (full structure) to: {ga2_pos_path}")
+        ga2_test_df.to_csv(ga2_pos_path, index=False)
+        print(f"Saved GA2 predictions (all 15 positions) to: {ga2_pos_path}")
+        
+        # Generate next N sequences using best model (AFTER test evaluation)
+        winner_is_ga1 = mse_te1 < mse_te2
+        
+        if config.NEW_ROWS_COUNT > 0:
+            _print_section(f"Generating Next {config.NEW_ROWS_COUNT} Future Sequences")
+            
+            best_nn = nn1 if winner_is_ga1 else nn2
+            winner_name = "GA1" if winner_is_ga1 else "GA2"
+            
+            # Get last row from original data (all 15 positions)
+            last_row_positions = base_df.iloc[-1, 1:].values.astype(float)  # Skip Processo
+            last_processo = int(base_df.iloc[-1, 0])
+            
+            print(f"Using best model: {winner_name}")
+            print(f"Starting from last row (Processo {last_processo}): {last_row_positions}")
+            print(f"Generating {config.NEW_ROWS_COUNT} future sequences...\n")
+            
+            # Generate sequences iteratively
+            future_sequences = []
+            current_row = last_row_positions.copy()
+            
+            for i in range(config.NEW_ROWS_COUNT):
+                # Normalize current row
+                current_norm = (current_row - pos_min) / (pos_max - pos_min + 1e-8)
+                
+                # Predict next row
+                next_norm = best_nn.predict(current_norm.reshape(1, -1))
+                next_row = next_norm * (pos_max - pos_min) + pos_min
+                next_row = next_row[0]  # Remove batch dimension
+                
+                # Store prediction
+                future_sequences.append({
+                    'Processo': last_processo + i + 1,
+                    **{pos_cols[j]: int(round(next_row[j])) for j in range(len(pos_cols))}
+                })
+                
+                # Use this prediction as input for next iteration
+                current_row = next_row
+                
+                if (i + 1) % 10 == 0:
+                    print(f"  Generated {i+1}/{config.NEW_ROWS_COUNT} sequences...")
+            
+            # Save future sequences as result.csv
+            result_df = pd.DataFrame(future_sequences)
+            result_path = out_dir / "result.csv"
+            result_df.to_csv(result_path, index=False)
+            print(f"\n✓ Saved {config.NEW_ROWS_COUNT} future sequences ({winner_name}) to: {result_path}")
+        else:
+            print("\nNEW_ROWS_COUNT is 0, skipping future sequence generation")
     else:
-        print("\nWarning: Base file not available, cannot generate full-structure outputs")
+        print("\nWarning: Base file not available, cannot generate outputs")
     
     # Final comparison
     _print_section("Comparison Summary")
@@ -340,7 +421,7 @@ def main():
     
     # Generate interactive markdown report
     from datetime import datetime
-    report_path = out_dir / "report.md"
+    report_path = out_dir / "result.md"
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     report_content = f"""# Neural Network Training Report
@@ -421,7 +502,7 @@ Generated: {timestamp}
 | Crossover Rate | {config.AG1_CROSSOVER_RATE*100:.1f}% | {config.AG2_CROSSOVER_RATE*100:.1f}% |
 | Elite Size | {config.AG1_ELITE_SIZE} | {config.AG2_ELITE_SIZE} |
 
-**Dataset:** {len(X_train)} training samples, {len(X_test)} test samples ({X.shape[1]} features)
+**Dataset:** {len(X_train)} training sequence pairs, {len(X_test)} test sequence pairs (15 positions input → 15 positions output)
 
 ---
 
@@ -445,20 +526,20 @@ Generated: {timestamp}
 
 ## Output Files
 
-- `base_posicao_test.csv` - Actual test values
-- `predictions_ga1_test.csv` - GA1 predictions
-- `predictions_ga2_test.csv` - GA2 predictions
+- `base_posicao_test.csv` - Actual next rows (ground truth)
+- `predictions_ga1_test.csv` - GA1 predictions (all 15 positions)
+- `predictions_ga2_test.csv` - GA2 predictions (all 15 positions)
 
-All files: {len(X_test)} rows, 16 columns (same structure as database)
+All files: {len(X_test)} rows, 16 columns (Processo + 15 predicted positions)
 """
     
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write(report_content)
     
     print(f"\nReport saved to: {report_path}")
-
-    # Optionally perform full-sequence prediction for new rows
-    _predict_full_sequence_if_requested(Path(config.DATA_FILE_PATH), out_dir)
+    print(f"\n{'='*70}")
+    print("Training and evaluation complete!")
+    print(f"{'='*70}\n")
 
 
 if __name__ == "__main__":
