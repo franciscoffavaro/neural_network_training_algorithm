@@ -105,7 +105,7 @@ def _predict_full_sequence_if_requested(base_path: Path, out_dir: Path):
         cols = list(base_df.columns)
         n = int(getattr(config, 'NEW_ROWS_COUNT', 0))
         print(f"Auto-generating {n} new rows for prediction (from environment)")
-        # Generate Processo IDs
+        # Generate Processo IDs with some variation to avoid identical predictions
         proc_col = cols[0]
         try:
             max_proc = pd.to_numeric(base_df[proc_col], errors='coerce').max()
@@ -113,10 +113,21 @@ def _predict_full_sequence_if_requested(base_path: Path, out_dir: Path):
                 max_proc = 0
         except Exception:
             max_proc = 0
+        
+        # Generate diverse starting points by sampling from existing data patterns
         rows = []
+        base_sample = base_df.sample(min(n, len(base_df)), replace=(n > len(base_df)))
+        
         for i in range(n):
             r = {c: None for c in cols}
             r[proc_col] = int(max_proc) + 1 + i
+            
+            # Copy first position from sampled row to add diversity
+            # (This gives the model a varied starting point for predictions)
+            if len(base_sample) > 0:
+                sample_row = base_sample.iloc[i % len(base_sample)]
+                r[cols[1]] = sample_row.iloc[1]  # Copy 1ª posição from sample
+            
             rows.append(r)
         novas_df = pd.DataFrame(rows, columns=cols)
 
@@ -139,12 +150,20 @@ def _predict_full_sequence_if_requested(base_path: Path, out_dir: Path):
     print("Training per-position models (GA1) ...")
     for k in range(1, n_cols):  # column 0 is 'Processo'; predict col k
         # Build training set for position k
-        Xk = base_df.iloc[:, 0:k].values  # features: Processo + previous positions (k columns)
+        # IMPORTANT: Skip column 0 (Processo) as it's just an ID with no predictive value
+        if k == 1:
+            # For 1st position: no previous positions, use a constant feature
+            # This forces the model to learn the average/distribution of 1st positions
+            Xk = np.ones((len(base_df), 1))  # constant feature
+        else:
+            # For positions 2-15: use ONLY previous positions (skip Processo ID)
+            Xk = base_df.iloc[:, 1:k].values  # features: previous positions only
+        
         yk = base_df.iloc[:, k].values.reshape(-1, 1)  # target: position k
 
         Xk_norm, yk_norm, Xk_min, Xk_max, yk_min, yk_max = _normalize_xy(Xk, yk)
 
-        nn_k = _train_ga1(input_size=k, X_train=Xk_norm, y_train=yk_norm, verbose=False)
+        nn_k = _train_ga1(input_size=Xk.shape[1], X_train=Xk_norm, y_train=yk_norm, verbose=False)
         models.append(nn_k)
         scalers.append((Xk_min, Xk_max, yk_min, yk_max))
 
@@ -155,8 +174,15 @@ def _predict_full_sequence_if_requested(base_path: Path, out_dir: Path):
             if pd.notna(row_out.iloc[k]):
                 # value provided; keep as-is
                 continue
-            # Build feature vector using current known/predicted values up to k-1
-            feats = row_out.iloc[0:k].astype(float).values
+            
+            # Build feature vector
+            if k == 1:
+                # For 1st position: use constant feature (same as training)
+                feats = np.array([1.0])
+            else:
+                # For positions 2-15: use previous predicted positions (skip Processo)
+                feats = row_out.iloc[1:k].astype(float).values
+            
             Xk_min, Xk_max, yk_min, yk_max = scalers[k-1]
             Xk_norm = (feats - Xk_min) / (Xk_max - Xk_min + 1e-8)
             yk_pred_norm = models[k-1].predict(Xk_norm.reshape(1, -1))
