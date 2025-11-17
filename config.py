@@ -10,7 +10,7 @@ class Config:
     
     # General settings
     DATA_FILE_PATH = os.getenv('DATA_FILE_PATH', 'database/dadosParaRede.ods')
-    TRAIN_RATIO = float(os.getenv('TRAIN_RATIO', '0.8'))
+    TRAIN_RATIO = float(os.getenv('TRAIN_RATIO', '0.8')) #80% train, 20% test
     RANDOM_SEED = os.getenv('RANDOM_SEED', '42')
     
     if RANDOM_SEED and RANDOM_SEED.lower() != 'none':
@@ -19,14 +19,14 @@ class Config:
         RANDOM_SEED = None
     
     # Neural network
-    NEURAL_HIDDEN_SIZE = int(os.getenv('NEURAL_HIDDEN_SIZE', '5'))
+    NEURAL_HIDDEN_SIZE = int(os.getenv('NEURAL_HIDDEN_SIZE', '10')) #default 10 hidden neurons
     
     # GA1: Tournament selection
-    AG1_POPULATION_SIZE = int(os.getenv('AG1_POPULATION_SIZE', '50'))
-    AG1_GENERATIONS = int(os.getenv('AG1_GENERATIONS', '100'))
-    AG1_MUTATION_RATE = float(os.getenv('AG1_MUTATION_RATE', '0.1'))
-    AG1_CROSSOVER_RATE = float(os.getenv('AG1_CROSSOVER_RATE', '0.8'))
-    AG1_TOURNAMENT_SIZE = int(os.getenv('AG1_TOURNAMENT_SIZE', '3'))
+    AG1_POPULATION_SIZE = int(os.getenv('AG1_POPULATION_SIZE', '50')) #default 50 individuals
+    AG1_GENERATIONS = int(os.getenv('AG1_GENERATIONS', '100')) #default 100 generations
+    AG1_MUTATION_RATE = float(os.getenv('AG1_MUTATION_RATE', '0.1')) #default 10%
+    AG1_CROSSOVER_RATE = float(os.getenv('AG1_CROSSOVER_RATE', '0.8')) #default 80%
+    AG1_TOURNAMENT_SIZE = int(os.getenv('AG1_TOURNAMENT_SIZE', '3')) #default 3 competitors
     AG1_ELITE_SIZE = int(os.getenv('AG1_ELITE_SIZE', '2'))
     
     # GA2: Roulette wheel selection
